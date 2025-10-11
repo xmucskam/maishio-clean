@@ -1,0 +1,26 @@
+# Node & build output
+node_modules/
+dist/
+runtime/
+*.log
+
+# Python virtual environment
+vendor/tts-venv/
+tts-venv/
+__pycache__/
+*.pyc
+
+# Large model files
+models/
+*.gguf
+*.pth
+*.bin
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+
+# Electron packaging outputs
+out/
+release/
+
