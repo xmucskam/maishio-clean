@@ -1,9 +1,12 @@
-export {}
+export {};
 
 declare global {
   interface Window {
     api: {
-      invoke<T = any>(channel: string, payload?: any): Promise<T>;
+      invoke: (channel: string, data?: any) => Promise<any>;
+      on?: (channel: string, listener: (...args: any[]) => void) => void;
+      // ping?: (msg: string) => Promise<string>; // if you want
     };
   }
 }
+
