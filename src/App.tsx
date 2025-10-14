@@ -22,6 +22,7 @@ export default function App() {
   const [wavPath, setWavPath] = useState<string | null>(null)
   const [cues, setCues] = useState<Cue[] | null>(null)
   const [viseme, setViseme] = useState<string>('X')
+  const [visemeGain, setVisemeGain] = useState<number>(1) // NEW: test boost
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const rafRef = useRef<number | null>(null)
@@ -52,7 +53,6 @@ export default function App() {
     }
   }, [messages])
 
-  // ------------------ PLAYBACK CONTROL ------------------
   function cancelAnimation() {
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
     rafRef.current = null
@@ -70,7 +70,6 @@ export default function App() {
     setInput('')
 
     try {
-      console.log('[App] Sending to LLM:', input)
       const text = await chatComplete(nextMsgs)
       setReply(text)
       const withAssistant = trimContext([...nextMsgs, { role: 'assistant', content: text }])
@@ -78,30 +77,17 @@ export default function App() {
 
       // --- TTS + Lipsync ---
       if (window.api?.invoke) {
-        console.log('[App] Generating speech...')
         const { wav } = await window.api.invoke<{ wav: string }>('tts:make', { text })
         setWavPath(wav)
 
-console.log('[App] Generating lipsync...')
-const lip = await window.api.invoke<any>('lipsync:make', { wavPath: wav })
-
-// Rhubarb CLI JSON shape is usually { mouthCues: [...] }
-const lipCues: Cue[] = Array.isArray(lip) ? lip
-  : Array.isArray(lip?.mouthCues) ? lip.mouthCues
-  : Array.isArray(lip?.cues) ? lip.cues
-  : Array.isArray(lip?.data) ? lip.data
-  : []
-
-setCues(lipCues)
-await playWithLipSync(wav, lipCues)
-
-
-
-        // console.log('[App] Generating lipsync...')
-        // const { cues } = await window.api.invoke<{ cues: Cue[] }>('lipsync:make', { wavPath: wav })
-        // setCues(cues)
-
-        // await playWithLipSync(wav, cues)
+        const lip = await window.api.invoke<any>('lipsync:make', { wavPath: wav })
+        const lipCues: Cue[] = Array.isArray(lip) ? lip
+          : Array.isArray(lip?.mouthCues) ? lip.mouthCues
+          : Array.isArray(lip?.cues) ? lip.cues
+          : Array.isArray(lip?.data) ? lip.data
+          : []
+        setCues(lipCues)
+        await playWithLipSync(wav, lipCues)
       } else {
         console.warn('[App] IPC not available; skipping TTS & lipsync.')
       }
@@ -113,77 +99,46 @@ await playWithLipSync(wav, lipCues)
     }
   }
 
-  // async function playWithLipSync(wavPath: string, lipCues: Cue[]) {
-  //   try {
-  //     const base64 = await window.api!.invoke<string>('file:read', wavPath)
-  //     const dataUrl = `data:audio/wav;base64,${base64}`
-
-  //     const audio = new Audio(dataUrl)
-  //     audioRef.current = audio
-  //     cancelAnimation()
-
-  //     const start = performance.now()
-  //     function tick(now: number) {
-  //       const t = (now - start) / 1000
-  //       const cue = lipCues.find(c => t >= c.start && t <= c.end)
-  //       const val = (cue?.value ?? 'X').toUpperCase()
-  //       setViseme(val)
-  //       rafRef.current = requestAnimationFrame(tick)
-  //     }
-
-  //     audio.onended = () => cancelAnimation()
-  //     audio.play().catch(err => console.error('[App] Audio play error:', err))
-  //     rafRef.current = requestAnimationFrame(tick)
-  //   } catch (e) {
-  //     console.error('[App] playWithLipSync error:', e)
-  //   }
-  // }
   async function playWithLipSync(wavPath: string, lipCuesRaw: any) {
-  try {
-    const base64 = await window.api!.invoke<string>('file:read', wavPath)
-    const dataUrl = `data:audio/wav;base64,${base64}`
+    try {
+      const base64 = await window.api!.invoke<string>('file:read', wavPath)
+      const dataUrl = `data:audio/wav;base64,${base64}`
 
-    // normalize + sort cues
-    const cues: Cue[] = Array.isArray(lipCuesRaw) ? lipCuesRaw
-      : Array.isArray(lipCuesRaw?.mouthCues) ? lipCuesRaw.mouthCues
-      : Array.isArray(lipCuesRaw?.cues) ? lipCuesRaw.cues
-      : Array.isArray(lipCuesRaw?.data) ? lipCuesRaw.data
-      : []
-    cues.sort((a, b) => a.start - b.start)
+      const cues: Cue[] = Array.isArray(lipCuesRaw) ? lipCuesRaw
+        : Array.isArray(lipCuesRaw?.mouthCues) ? lipCuesRaw.mouthCues
+        : Array.isArray(lipCuesRaw?.cues) ? lipCuesRaw.cues
+        : Array.isArray(lipCuesRaw?.data) ? lipCuesRaw.data
+        : []
+      cues.sort((a, b) => a.start - b.start)
 
-    const audio = new Audio(dataUrl)
-    audioRef.current = audio
-    cancelAnimation()
+      const audio = new Audio(dataUrl)
+      audioRef.current = audio
+      cancelAnimation()
 
-    const start = performance.now()
-    let idx = 0
+      const start = performance.now()
+      let idx = 0
 
-    function tick(now: number) {
-      const t = (now - start) / 1000
-
-      while (idx < cues.length && t > cues[idx].end) idx++
-
-      let vis = 'X'
-      if (idx < cues.length) {
-        const c = cues[idx]
-        if (t >= c.start && t <= c.end) vis = (c.value || 'X').toUpperCase()
+      function tick(now: number) {
+        const t = (now - start) / 1000
+        while (idx < cues.length && t > cues[idx].end) idx++
+        let vis = 'X'
+        if (idx < cues.length) {
+          const c = cues[idx]
+          if (t >= c.start && t <= c.end) vis = (c.value || 'X').toUpperCase()
+        }
+        setViseme(vis)
+        rafRef.current = requestAnimationFrame(tick)
       }
 
-      setViseme(vis)
+      audio.onended = () => cancelAnimation()
+      audio.onerror = () => cancelAnimation()
+
+      await audio.play().catch(err => console.error('[App] Audio play error:', err))
       rafRef.current = requestAnimationFrame(tick)
+    } catch (e) {
+      console.error('[App] playWithLipSync error:', e)
     }
-
-    audio.onended = () => cancelAnimation()
-    audio.onerror = () => cancelAnimation()
-
-    await audio.play().catch(err => console.error('[App] Audio play error:', err))
-    rafRef.current = requestAnimationFrame(tick)
-  } catch (e) {
-    console.error('[App] playWithLipSync error:', e)
   }
-}
-
-
 
   function resetChat() {
     setMessages([SYS])
@@ -191,7 +146,6 @@ await playWithLipSync(wav, lipCues)
     localStorage.removeItem(CHAT_KEY)
   }
 
-  // ------------------ RENDER ------------------
   return (
     <div style={{
       minHeight: '100vh',
@@ -204,14 +158,9 @@ await playWithLipSync(wav, lipCues)
         Maishio — Local AI Avatar
       </h1>
 
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '2rem',
-        flexWrap: 'wrap'
-      }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '2rem', flexWrap: 'wrap' }}>
         {/* 3D Avatar */}
-        <Avatar modelUrl="/character/face.glb" viseme={viseme} />
+        <Avatar modelUrl="/character/face.glb" viseme={viseme} gain={visemeGain} />
 
         {/* Text input / buttons */}
         <div style={{ flex: 1, minWidth: 300 }}>
@@ -231,61 +180,44 @@ await playWithLipSync(wav, lipCues)
               resize: 'vertical'
             }}
           />
-          <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem' }}>
+          <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             <button
               onClick={send}
               disabled={busy}
-              style={{
-                padding: '0.6rem 1rem',
-                borderRadius: 8,
-                border: 0,
-                background: busy ? '#4f46e5aa' : '#3b82f6',
-                color: '#fff',
-                cursor: busy ? 'default' : 'pointer',
-                fontWeight: 600
-              }}
+              style={{ padding: '0.6rem 1rem', borderRadius: 8, border: 0, background: busy ? '#4f46e5aa' : '#3b82f6', color: '#fff', cursor: busy ? 'default' : 'pointer', fontWeight: 600 }}
             >
               {busy ? 'Working…' : 'Send'}
             </button>
             <button
               onClick={resetChat}
               disabled={busy}
-              style={{
-                padding: '0.6rem 1rem',
-                borderRadius: 8,
-                border: 0,
-                background: '#dc2626',
-                color: '#fff',
-                fontWeight: 600
-              }}
+              style={{ padding: '0.6rem 1rem', borderRadius: 8, border: 0, background: '#dc2626', color: '#fff', fontWeight: 600 }}
             >
               Reset
             </button>
-            <button
-  onClick={async () => {
-    const seq = ['X','A','E','F','G','B','C','D','X']
-    for (const v of seq) {
-      setViseme(v)
-      await new Promise(r => setTimeout(r, 400))
-    }
-  }}
-  style={{ padding: '0.6rem 1rem', borderRadius: 8, border: 0, background: '#475569', color: '#fff', fontWeight: 600 }}
->
-  Test Visemes
-</button>
 
+            {/* TEST VISEMES – more pronounced */}
+            <button
+              onClick={async () => {
+                setVisemeGain(2.5)                     // boost during test
+                const seq = ['X','A','E','F','G','B','C','D','X','A','G']
+                for (const v of seq) {
+                  setViseme(v)
+                  await new Promise(r => setTimeout(r, 240)) // faster cadence for overlap
+                }
+                setViseme('X')
+                setVisemeGain(1.0)                     // back to normal
+              }}
+              style={{ padding: '0.6rem 1rem', borderRadius: 8, border: 0, background: '#475569', color: '#fff', fontWeight: 600 }}
+            >
+              Test Visemes
+            </button>
           </div>
         </div>
       </div>
 
       {/* Response */}
-      <div style={{
-        marginTop: '1.25rem',
-        background: '#1e1e1e',
-        borderRadius: 8,
-        padding: '1rem',
-        border: '1px solid #2a2a2a'
-      }}>
+      <div style={{ marginTop: '1.25rem', background: '#1e1e1e', borderRadius: 8, padding: '1rem', border: '1px solid #2a2a2a' }}>
         <strong>Response:</strong>
         <div style={{ whiteSpace: 'pre-wrap', marginTop: '0.5rem' }}>
           {reply || (busy ? 'Thinking…' : '—')}
@@ -293,14 +225,7 @@ await playWithLipSync(wav, lipCues)
       </div>
 
       {(wavPath || cues) && (
-        <div style={{
-          marginTop: '1rem',
-          fontSize: '0.875rem',
-          opacity: 0.75,
-          padding: '0.5rem',
-          backgroundColor: '#202020',
-          borderRadius: 6
-        }}>
+        <div style={{ marginTop: '1rem', fontSize: '0.875rem', opacity: 0.75, padding: '0.5rem', backgroundColor: '#202020', borderRadius: 6 }}>
           {wavPath && <div>🎵 Audio: {wavPath.split('/').pop()}</div>}
           {cues && <div>👄 Lip-sync: {cues.length} cues loaded</div>}
         </div>
@@ -308,6 +233,5 @@ await playWithLipSync(wav, lipCues)
     </div>
   )
 }
-
 
 
