@@ -1,253 +1,607 @@
-// import React, { useEffect, useMemo } from 'react'
+// import React, { Suspense, useEffect, useMemo, useRef } from 'react'
 // import * as THREE from 'three'
 // import { Canvas } from '@react-three/fiber'
 // import { Environment, OrbitControls, useGLTF } from '@react-three/drei'
 
-// type Props = {
-//   modelUrl: string
-//   viseme: string // e.g. 'A','B','C','D','E','F','G','H','X','L' (Rhubarb)
+// type Props = { modelUrl: string; viseme: string }
+
+// // How open to make the mouth per viseme (tweak to taste)
+// const VISEME_OPEN: Record<string, number> = {
+//   X: 0.02,
+//   A: 1.00,
+//   B: 0.25,
+//   C: 0.85,
+//   D: 0.75,
+//   E: 0.55,
+//   F: 0.45,
+//   G: 1.00,
+//   H: 0.35,
+//   L: 0.60,
 // }
 
-// /**
-//  * Map Rhubarb visemes to approximate ARKit blendshapes.
-//  * Tune these weights to your model. Keys must match (fuzzy) your morph target names.
-//  */
-// const VISEME_TO_ARKIT: Record<string, Record<string, number>> = {
-//   // REST
-//   X: { jawOpen: 0, mouthFunnel: 0, mouthPucker: 0, mouthSmileLeft: 0, mouthSmileRight: 0 },
+// // tuning
+// const OPEN_GAIN = 1.35
+// const EASE_POW = 0.9
+// const LERP_MOUTH = 0.5
+// const LERP_SMILE = 0.25
 
-//   // A: open mouth (AA)
-//   A: { jawOpen: 0.65, mouthFunnel: 0.10 },
+// const ATTACK_TC  = 0.16   // how fast it opens toward a bigger viseme
+// const RELEASE_TC = 0.22   // how fast it closes toward a smaller viseme
 
-//   // B: M/B/P → closed lips
-//   B: { jawOpen: 0.02, mouthPucker: 0.20 },
+// // head motion (subtle)
+// const HEAD_YAW   = 0.10
+// const HEAD_PITCH = 0.05
+// const HEAD_ROLL  = 0.02
+// const HEAD_BOB_Y = 0.015
 
-//   // C: “ch/j/sh/k” style
-//   C: { jawOpen: 0.35, mouthFunnel: 0.35 },
+// // eye motion
+// const EYE_YAW_MAX   = 0.18
+// const EYE_PITCH_MAX = 0.10
+// const SACCADE_EVERY_MIN = 0.8
+// const SACCADE_EVERY_MAX = 2.2
+// const SACCADE_TIME      = 0.22
 
-//   // D: “t/d” / “e”-ish
-//   D: { jawOpen: 0.30, mouthUpperUpLeft: 0.15, mouthUpperUpRight: 0.15 },
+// // blink fallback (squash eyes a little if no eyelid morphs)
+// const BLINK_EVERY_MIN = 3.5     // slower
+// const BLINK_EVERY_MAX = 7.5
+// const BLINK_DURATION  = 0.18    // longer
+// const BLINK_CLOSED_Y  = 0.55    // 55% height (was 0.08 → too much)
 
-//   // E: “ee”
-//   E: { jawOpen: 0.15, mouthSmileLeft: 0.35, mouthSmileRight: 0.35 },
-
-//   // F: “f/v” (lower lip to teeth)
-//   F: { jawOpen: 0.10, mouthFunnel: 0.10, mouthPucker: 0.30 },
-
-//   // G: “o/u”
-//   G: { jawOpen: 0.20, mouthFunnel: 0.45, mouthPucker: 0.25 },
-
-//   // H: short neutral
-//   H: { jawOpen: 0.10 },
-
-//   // Optional: L (if Rhubarb ever emits it in your config)
-//   L: { jawOpen: 0.25, mouthSmileLeft: 0.10, mouthSmileRight: 0.10 }
-// }
-
-// // names you may want to zero when switching visemes:
-// const ALL_AR_KIT_KEYS = [
-//   'jawOpen', 'mouthFunnel', 'mouthPucker',
-//   'mouthSmileLeft', 'mouthSmileRight',
-//   'mouthUpperUpLeft', 'mouthUpperUpRight'
-// ]
-
-// // fuzzy find a morph target in this mesh dict
-// function findKey(dict: Record<string, number>, name: string) {
-//   const n = name.toLowerCase()
-//   let best: string | null = null
-//   for (const k of Object.keys(dict)) {
-//     if (k.toLowerCase() === n) return k
-//     if (k.toLowerCase().includes(n)) best = k
-//   }
-//   return best
-// }
-
-// function applyVisemeToScene(scene: THREE.Object3D, viseme: string) {
-//   const weights = VISEME_TO_ARKIT[viseme] ?? VISEME_TO_ARKIT['X']
-
-//   scene.traverse(obj => {
-//     const mesh = obj as any
-//     if (!mesh.isMesh || !mesh.morphTargetDictionary || !mesh.morphTargetInfluences) return
-
-//     const dict = mesh.morphTargetDictionary as Record<string, number>
-//     const infl = mesh.morphTargetInfluences as number[]
-
-//     // zero out the set we manage
-//     for (const k of ALL_AR_KIT_KEYS) {
-//       const key = findKey(dict, k)
-//       if (key) infl[dict[key]] = 0
-//     }
-
-//     // set new weights
-//     for (const [key, val] of Object.entries(weights)) {
-//       const match = findKey(dict, key)
-//       if (match) infl[dict[match]] = val
-//     }
-
-//     mesh.needsUpdate = true
-//   })
-// }
-
-// function Head({ url, viseme }: { url: string; viseme: string }) {
-//   const gltf = useGLTF(url) as any
-//   const scene = useMemo(() => gltf.scene.clone(true), [gltf])
-
-//   useEffect(() => {
-//     if (!scene) return
-//     applyVisemeToScene(scene, viseme)
-//   }, [scene, viseme])
-
-//   // basic placement; tweak for your model
-//   return <primitive object={scene} position={[0, -1.2, 0]} />
-// }
+// // helpers
+// const clamp01 = (x:number)=>Math.max(0,Math.min(1,x))
+// const lerp = (a:number,b:number,t:number)=>a+(b-a)*t
+// const easeOutCubic = (t:number)=>1-Math.pow(1-t,3)
 
 // export default function Avatar({ modelUrl, viseme }: Props) {
 //   return (
-//     <div style={{ width: 320, height: 320, borderRadius: '50%', border: '4px solid #3b82f6', overflow: 'hidden' }}>
-//       <Canvas camera={{ position: [0, 0.2, 2.8], fov: 35 }}>
-//         <ambientLight intensity={0.7} />
-//         <directionalLight position={[2, 3, 2]} intensity={1.0} />
-//         <Head url={modelUrl} viseme={viseme} />
+//     <div style={{ width: 360, height: 360, borderRadius: '50%', border: '4px solid #3b82f6', overflow: 'hidden', background: '#111' }}>
+//       {/* You can also try fov: 28 and position.z: 1.0 if you want tighter framing */}
+//       <Canvas camera={{ position: [0, 0.12, 1.15], fov: 35 }}>
+//         <ambientLight intensity={0.8} />
+//         <directionalLight position={[2, 3, 2]} intensity={1.1} />
+//         <Suspense fallback={null}>
+//           <Head url={modelUrl} viseme={viseme} />
+//         </Suspense>
 //         <Environment preset="studio" />
-//         <OrbitControls enablePan={false} enableZoom={false} />
+//         {/* Target is a bit high to center on eyes/face */}
+//         <OrbitControls enablePan={false} enableZoom={true} target={[0, 0.53, 0]} />
 //       </Canvas>
 //     </div>
 //   )
 // }
 
-// // drei cache for GLB
+// function Head({ url, viseme }: { url: string; viseme: string }) {
+//   const gltf = useGLTF(url) as any
+//   const scene = useMemo(() => gltf?.scene?.clone(true), [gltf])
+
+//   // refs for animation state
+//   const tRef = useRef(0)
+//   const lastMsRef = useRef(0)
+
+//   // mouth targets found in scene (by name)
+//   const mouthTargetsRef = useRef<Array<{ mesh:any; openIdx:number; smileIdx:number|null }>>([])
+//   const mouthCurOpenRef = useRef(0)
+//   const mouthTgtOpenRef = useRef(0)
+//   const mouthCmdRef = useRef(0)
+
+//   // eyes + blink state
+//   const eyeLRef = useRef<THREE.Object3D|null>(null)
+//   const eyeRRef = useRef<THREE.Object3D|null>(null)
+//   const eyeGazeRef = useRef({ yaw: 0, pitch: 0 })
+//   const eyeGazeStartRef = useRef({ yaw: 0, pitch: 0 })
+//   const eyeGazeTargetRef = useRef({ yaw: 0, pitch: 0 })
+//   const saccadeTimerRef = useRef(0)
+//   const saccadeDurRef = useRef(SACCADE_TIME)
+//   const nextSaccadeInRef = useRef(rand(SACCADE_EVERY_MIN, SACCADE_EVERY_MAX))
+
+//   const blinkTimerRef = useRef(0)
+//   const nextBlinkInRef = useRef(rand(BLINK_EVERY_MIN, BLINK_EVERY_MAX))
+//   const blinkingRef = useRef(false)
+//   const blinkPhaseRef = useRef(0) // 0→1 over BLINK_DURATION
+
+//   // optional: log morphs
+//   useEffect(() => {
+//     if (!scene) return
+//     console.log('🔎 Dumping morph targets from model:')
+//     scene.traverse((o: any) => {
+//       if (o.isMesh && o.morphTargetDictionary) {
+//         console.log(`Mesh "${o.name}":`, Object.keys(o.morphTargetDictionary))
+//       }
+//     })
+//   }, [scene])
+
+//   // normalize size & center
+//   useEffect(() => {
+//     if (!scene) return
+//     const box = new THREE.Box3().setFromObject(scene)
+//     const size = new THREE.Vector3()
+//     const center = new THREE.Vector3()
+//     box.getSize(size); box.getCenter(center)
+//     const s = 1.6 / Math.max(size.x, size.y, size.z || 1)
+//     scene.position.sub(center)
+//     scene.scale.setScalar(s)
+//   }, [scene])
+
+//   // find mouth morphs and eyes
+//   useEffect(() => {
+//     if (!scene) return
+
+//     // mouth
+//     const found: Array<{ mesh:any; openIdx:number; smileIdx:number|null }> = []
+//     scene.traverse((o: any) => {
+//       if (!o.isMesh || !o.morphTargetDictionary || !o.morphTargetInfluences) return
+//       const dict = o.morphTargetDictionary as Record<string, number>
+//       const openIdx  = dict['mouthOpen']
+//       if (openIdx == null) return
+//       const smileIdx = dict['mouthSmile'] ?? null
+//       found.push({ mesh: o, openIdx, smileIdx })
+//     })
+//     mouthTargetsRef.current = found
+
+//     // eyes
+//     eyeLRef.current = scene.getObjectByName('EyeLeft') || findBySubstring(scene, 'EyeLeft')
+//     eyeRRef.current = scene.getObjectByName('EyeRight') || findBySubstring(scene, 'EyeRight')
+//     console.log('👀 Eyes:', eyeLRef.current?.name, eyeRRef.current?.name)
+
+//     // make sure eyes start visible (reset any accidental scaling)
+//     if (eyeLRef.current) (eyeLRef.current as any).scale.set(1,1,1)
+//     if (eyeRRef.current) (eyeRRef.current as any).scale.set(1,1,1)
+
+//     // start RAF
+//     lastMsRef.current = performance.now()
+//     let raf = 0
+//     const tick = () => {
+//       const now = performance.now()
+//       const dt = Math.min(0.05, (now - lastMsRef.current) / 1000)
+//       lastMsRef.current = now
+//       tRef.current += dt
+
+//       animateHead(dt)
+//       animateMouth(dt)
+//       animateEyes(dt)
+//       animateBlink(dt)
+
+//       raf = requestAnimationFrame(tick)
+//     }
+//     raf = requestAnimationFrame(tick)
+//     return () => cancelAnimationFrame(raf)
+//   }, [scene])
+
+//   // update mouth target when viseme changes
+//   useEffect(() => {
+//     const raw = VISEME_OPEN[viseme] ?? 0
+//     let targetOpen = Math.pow(raw, EASE_POW) * OPEN_GAIN
+//     mouthTgtOpenRef.current = clamp01(targetOpen)
+//   }, [viseme])
+
+//   // --- animation implementations ---
+
+//   function animateHead(dt: number) {
+//     if (!scene) return
+//     const t = tRef.current
+
+//     // gentle idle sinusoids
+//     const yaw   = HEAD_YAW   * Math.sin(t * 0.6)
+//     const pitch = HEAD_PITCH * Math.sin(t * 0.8 + 1.3)
+//     const roll  = HEAD_ROLL  * Math.sin(t * 0.5 + 0.7)
+//     scene.rotation.set(pitch, yaw, roll)
+
+//     // bob up/down; add slight emphasis with mouth openness (talking)
+//     const openness = mouthCurOpenRef.current
+//     scene.position.y = -0.2 + HEAD_BOB_Y * (Math.sin(t * 2.2) * 0.6 + openness * 0.4)
+//   }
+
+//   function animateMouth(dt: number) {
+//     const targets = mouthTargetsRef.current
+//     if (!targets.length) return
+
+//     const cur = mouthCurOpenRef.current
+//     const tgt = mouthTgtOpenRef.current
+//     const next = lerp(cur, tgt, LERP_MOUTH)
+//     mouthCurOpenRef.current = next
+
+//     const smileTarget =
+//       tgt > 0.8 ? 0.25 :
+//       tgt > 0.5 ? 0.14 :
+//       0.02
+
+//     for (const { mesh, openIdx, smileIdx } of targets) {
+//       const infl = mesh.morphTargetInfluences as number[]
+//       infl[openIdx] = next
+//       if (smileIdx != null) infl[smileIdx] = lerp(infl[smileIdx] ?? 0, smileTarget, LERP_SMILE)
+//       mesh.needsUpdate = true
+//     }
+//   }
+
+//   function animateEyes(dt: number) {
+//     const eyeL = eyeLRef.current as any
+//     const eyeR = eyeRRef.current as any
+//     if (!eyeL && !eyeR) return
+
+//     // saccades
+//     saccadeTimerRef.current += dt
+//     if (saccadeTimerRef.current >= nextSaccadeInRef.current) {
+//       saccadeTimerRef.current = 0
+//       nextSaccadeInRef.current = rand(SACCADE_EVERY_MIN, SACCADE_EVERY_MAX)
+//       saccadeDurRef.current = SACCADE_TIME
+//       eyeGazeStartRef.current = { ...eyeGazeRef.current }
+//       eyeGazeTargetRef.current = {
+//         yaw:   rand(-EYE_YAW_MAX, EYE_YAW_MAX),
+//         pitch: rand(-EYE_PITCH_MAX, EYE_PITCH_MAX),
+//       }
+//     }
+
+//     const r = clamp01(saccadeTimerRef.current / saccadeDurRef.current)
+//     const s = easeOutCubic(r)
+//     eyeGazeRef.current.yaw   = lerp(eyeGazeStartRef.current.yaw,   eyeGazeTargetRef.current.yaw,   s)
+//     eyeGazeRef.current.pitch = lerp(eyeGazeStartRef.current.pitch, eyeGazeTargetRef.current.pitch, s)
+
+//     if (eyeL) { eyeL.rotation.y = eyeGazeRef.current.yaw;   eyeL.rotation.x = eyeGazeRef.current.pitch }
+//     if (eyeR) { eyeR.rotation.y = eyeGazeRef.current.yaw;   eyeR.rotation.x = eyeGazeRef.current.pitch }
+//   }
+
+//   function animateBlink(dt: number) {
+//     const eyeL = eyeLRef.current as any
+//     const eyeR = eyeRRef.current as any
+//     if (!eyeL && !eyeR) return
+
+//     if (!blinkingRef.current) {
+//       blinkTimerRef.current += dt
+//       if (blinkTimerRef.current >= nextBlinkInRef.current) {
+//         blinkingRef.current = true
+//         blinkPhaseRef.current = 0
+//         blinkTimerRef.current = 0
+//         nextBlinkInRef.current = rand(BLINK_EVERY_MIN, BLINK_EVERY_MAX)
+//       }
+//     }
+
+//     if (blinkingRef.current) {
+//       blinkPhaseRef.current += dt / BLINK_DURATION
+//       const p = blinkPhaseRef.current
+//       // 0→1→0 curve
+//       const k = p < 0.5 ? (p / 0.5) : (1 - (p - 0.5) / 0.5)
+//       const closed = easeOutCubic(k)
+
+//       // gentler squash so eyes stay visible
+//       const yScale = THREE.MathUtils.lerp(1, BLINK_CLOSED_Y, closed)
+
+//       if (eyeL) eyeL.scale.y = yScale
+//       if (eyeR) eyeR.scale.y = yScale
+
+//       if (p >= 1) {
+//         blinkingRef.current = false
+//         if (eyeL) eyeL.scale.y = 1
+//         if (eyeR) eyeR.scale.y = 1
+//       }
+//     }
+//   }
+
+//   if (!scene) return null
+//   return <primitive object={scene} position={[0, -0.2, 0]} />
+// }
+
 // useGLTF.preload('/character/face.glb')
 
+// // --- small helpers ---
+// function findBySubstring(root: THREE.Object3D, needle: string): THREE.Object3D | null {
+//   let found: THREE.Object3D | null = null
+//   root.traverse(obj => {
+//     if (found) return
+//     if (obj.name && obj.name.toLowerCase().includes(needle.toLowerCase())) {
+//       found = obj
+//     }
+//   })
+//   return found
+// }
+// function rand(a:number,b:number){ return a + Math.random()*(b-a) }
 
 
 
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { Suspense, useEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { Canvas } from '@react-three/fiber'
 import { Environment, OrbitControls, useGLTF } from '@react-three/drei'
 
 type Props = { modelUrl: string; viseme: string }
 
-// --- Viseme → ARKit weights (tune later) ---
-const VISEME_TO_ARKIT: Record<string, Record<string, number>> = {
-  X: { jawOpen: 0, mouthFunnel: 0, mouthPucker: 0, mouthSmileLeft: 0, mouthSmileRight: 0 },
-  A: { jawOpen: 0.65, mouthFunnel: 0.10 },
-  B: { jawOpen: 0.02, mouthPucker: 0.20 }, // M/B/P (closed lips)
-  C: { jawOpen: 0.35, mouthFunnel: 0.35 },
-  D: { jawOpen: 0.30, mouthUpperUpLeft: 0.15, mouthUpperUpRight: 0.15 },
-  E: { jawOpen: 0.15, mouthSmileLeft: 0.35, mouthSmileRight: 0.35 },
-  F: { jawOpen: 0.10, mouthPucker: 0.30 },
-  G: { jawOpen: 0.20, mouthFunnel: 0.45, mouthPucker: 0.25 },
-  H: { jawOpen: 0.10 },
-  L: { jawOpen: 0.25, mouthSmileLeft: 0.10, mouthSmileRight: 0.10 },
-}
-const CONTROLLED_KEYS = Array.from(
-  new Set(Object.values(VISEME_TO_ARKIT).flatMap(o => Object.keys(o)))
-)
-
-// normalize morph names to compare
-function norm(s: string) {
-  return s
-    .replace(/^blendshape[_.]/i, '')
-    .replace(/^blendshapes[_.]/i, '')
-    .replace(/^bs[_.-]/i, '')
-    .replace(/^arkit[_.-]/i, '')
-    .replace(/[^a-z0-9]/gi, '')
-    .toLowerCase()
+// How open to make the mouth per viseme (tweak to taste)
+const VISEME_OPEN: Record<string, number> = {
+  X: 0.02,
+  A: 1.00,
+  B: 0.25,
+  C: 0.85,
+  D: 0.75,
+  E: 0.55,
+  F: 0.45,
+  G: 1.00,
+  H: 0.35,
+  L: 0.60,
 }
 
-type Binding = { mesh: THREE.Mesh, index: number }
-type BindMap = Record<string, Binding[]> // arkitKey -> bindings
+// tuning
+const OPEN_GAIN = 1.35
+const EASE_POW = 0.9
+const LERP_MOUTH = 0.5
+const LERP_SMILE = 0.25
 
-// build a binding map from scene meshes to ARKit keys
-function buildBindings(root: THREE.Object3D): BindMap {
-  const map: BindMap = {}
-  root.traverse((o: any) => {
-    if (!o.isMesh || !o.morphTargetDictionary || !o.morphTargetInfluences) return
-    const dict = o.morphTargetDictionary as Record<string, number>
-    const names = Object.keys(dict)
+// two-stage mouth smoothing (attack/release → then lerp)
+const ATTACK_TC  = 0.16   // s, open faster
+const RELEASE_TC = 0.22   // s, close a bit slower
 
-    // DEBUG: list raw keys once
-    console.groupCollapsed(`[Avatar] Morph targets in ${o.name || '(unnamed mesh)'}`)
-    console.log(names)
-    console.groupEnd()
+// head motion (subtle)
+const HEAD_YAW   = 0.10
+const HEAD_PITCH = 0.05
+const HEAD_ROLL  = 0.02
+const HEAD_BOB_Y = 0.015
 
-    for (const raw of names) {
-      const n = norm(raw)
-      for (const ar of CONTROLLED_KEYS) {
-        if (n.includes(norm(ar))) {
-          (map[ar] ||= []).push({ mesh: o, index: dict[raw] })
-        }
-      }
-    }
-  })
-  return map
-}
+// eye motion
+const EYE_YAW_MAX   = 0.18
+const EYE_PITCH_MAX = 0.10
+const SACCADE_EVERY_MIN = 0.8
+const SACCADE_EVERY_MAX = 2.2
+const SACCADE_TIME      = 0.22
 
-const SMOOTH = 0.35
-const lerp = (a: number, b: number, t: number) => a + (b - a) * t
+// blink fallback (squash eyes a little if no eyelid morphs)
+const BLINK_EVERY_MIN = 3.5
+const BLINK_EVERY_MAX = 7.5
+const BLINK_DURATION  = 0.18
+const BLINK_CLOSED_Y  = 0.55 // keep eyes visible
 
-function Head({ url, viseme }: { url: string; viseme: string }) {
-  const gltf = useGLTF(url) as any
-  const scene = useMemo(() => gltf.scene.clone(true), [gltf])
-  const bindingsRef = useRef<BindMap | null>(null)
-  const [boundOnce, setBoundOnce] = useState(false)
-
-  useEffect(() => {
-    if (!scene || boundOnce) return
-    const b = buildBindings(scene)
-    bindingsRef.current = b
-    setBoundOnce(true)
-    // If no bindings, warn so you know to adjust mapping
-    if (Object.keys(b).length === 0) {
-      console.warn('[Avatar] No ARKit keys matched. Check morph names in console and update mapping.')
-    } else {
-      console.log('[Avatar] Bound keys:', Object.keys(b))
-    }
-  }, [scene, boundOnce])
-
-  useEffect(() => {
-    if (!scene || !bindingsRef.current) return
-    const weights = VISEME_TO_ARKIT[viseme] || VISEME_TO_ARKIT['X']
-
-    // zero controlled keys smoothly
-    for (const key of CONTROLLED_KEYS) {
-      const binds = bindingsRef.current[key]
-      if (!binds) continue
-      for (const { mesh, index } of binds) {
-        const infl = mesh.morphTargetInfluences!
-        infl[index] = lerp(infl[index] ?? 0, 0, SMOOTH)
-        mesh.needsUpdate = true
-      }
-    }
-
-    // apply viseme weights smoothly
-    for (const [key, val] of Object.entries(weights)) {
-      const binds = bindingsRef.current[key]
-      if (!binds) continue
-      for (const { mesh, index } of binds) {
-        const infl = mesh.morphTargetInfluences!
-        infl[index] = lerp(infl[index] ?? 0, val, SMOOTH)
-        mesh.needsUpdate = true
-      }
-    }
-  }, [scene, viseme])
-
-  return <primitive object={scene} position={[0, -1.2, 0]} />
-}
+// helpers
+const clamp01 = (x:number)=>Math.max(0,Math.min(1,x))
+const lerp = (a:number,b:number,t:number)=>a+(b-a)*t
+const easeOutCubic = (t:number)=>1-Math.pow(1-t,3)
 
 export default function Avatar({ modelUrl, viseme }: Props) {
   return (
-    <div style={{ width: 320, height: 320, borderRadius: '50%', border: '4px solid #3b82f6', overflow: 'hidden' }}>
-      <Canvas camera={{ position: [0, 0.2, 2.2], fov: 35 }}>
-        <ambientLight intensity={0.7} />
-        <directionalLight position={[2, 3, 2]} intensity={1.0} />
-        <Head url={modelUrl} viseme={viseme} />
+    <div style={{ width: 360, height: 360, borderRadius: '50%', border: '4px solid #3b82f6', overflow: 'hidden', background: '#111' }}>
+      <Canvas camera={{ position: [0, 0.12, 1.15], fov: 35 }}>
+        <ambientLight intensity={0.8} />
+        <directionalLight position={[2, 3, 2]} intensity={1.1} />
+        <Suspense fallback={null}>
+          <Head url={modelUrl} viseme={viseme} />
+        </Suspense>
         <Environment preset="studio" />
-        <OrbitControls enablePan={false} enableZoom={false} />
+        <OrbitControls enablePan={false} enableZoom={true} target={[0, 0.53, 0]} />
       </Canvas>
     </div>
   )
 }
 
+function Head({ url, viseme }: { url: string; viseme: string }) {
+  const gltf = useGLTF(url) as any
+  const scene = useMemo(() => gltf?.scene?.clone(true), [gltf])
+
+  // refs for animation state
+  const tRef = useRef(0)
+  const lastMsRef = useRef(0)
+
+  // mouth targets found in scene (by name)
+  const mouthTargetsRef = useRef<Array<{ mesh:any; openIdx:number; smileIdx:number|null }>>([])
+  const mouthCmdRef = useRef(0)      // command from viseme map (pre-smoothing)
+  const mouthTgtOpenRef = useRef(0)  // target after attack/release smoothing
+  const mouthCurOpenRef = useRef(0)  // current influence value (post-lerp smoothing)
+
+  // eyes + blink state
+  const eyeLRef = useRef<THREE.Object3D|null>(null)
+  const eyeRRef = useRef<THREE.Object3D|null>(null)
+  const eyeGazeRef = useRef({ yaw: 0, pitch: 0 })
+  const eyeGazeStartRef = useRef({ yaw: 0, pitch: 0 })
+  const eyeGazeTargetRef = useRef({ yaw: 0, pitch: 0 })
+  const saccadeTimerRef = useRef(0)
+  const saccadeDurRef = useRef(SACCADE_TIME)
+  const nextSaccadeInRef = useRef(rand(SACCADE_EVERY_MIN, SACCADE_EVERY_MAX))
+
+  const blinkTimerRef = useRef(0)
+  const nextBlinkInRef = useRef(rand(BLINK_EVERY_MIN, BLINK_EVERY_MAX))
+  const blinkingRef = useRef(false)
+  const blinkPhaseRef = useRef(0) // 0→1 over BLINK_DURATION
+
+  // optional: log morphs
+  useEffect(() => {
+    if (!scene) return
+    console.log('🔎 Dumping morph targets from model:')
+    scene.traverse((o: any) => {
+      if (o.isMesh && o.morphTargetDictionary) {
+        console.log(`Mesh "${o.name}":`, Object.keys(o.morphTargetDictionary))
+      }
+    })
+  }, [scene])
+
+  // normalize size & center
+  useEffect(() => {
+    if (!scene) return
+    const box = new THREE.Box3().setFromObject(scene)
+    const size = new THREE.Vector3()
+    const center = new THREE.Vector3()
+    box.getSize(size); box.getCenter(center)
+    const s = 1.6 / Math.max(size.x, size.y, size.z || 1)
+    scene.position.sub(center)
+    scene.scale.setScalar(s)
+  }, [scene])
+
+  // find mouth morphs and eyes
+  useEffect(() => {
+    if (!scene) return
+
+    // mouth
+    const found: Array<{ mesh:any; openIdx:number; smileIdx:number|null }> = []
+    scene.traverse((o: any) => {
+      if (!o.isMesh || !o.morphTargetDictionary || !o.morphTargetInfluences) return
+      const dict = o.morphTargetDictionary as Record<string, number>
+      const openIdx  = dict['mouthOpen']
+      if (openIdx == null) return
+      const smileIdx = dict['mouthSmile'] ?? null
+      found.push({ mesh: o, openIdx, smileIdx })
+    })
+    mouthTargetsRef.current = found
+
+    // eyes (look for nodes named exactly or containing EyeLeft/EyeRight)
+    eyeLRef.current = scene.getObjectByName('EyeLeft') || findBySubstring(scene, 'EyeLeft')
+    eyeRRef.current = scene.getObjectByName('EyeRight') || findBySubstring(scene, 'EyeRight')
+    console.log('👀 Eyes:', eyeLRef.current?.name, eyeRRef.current?.name)
+
+    // reset eye scale to normal
+    if (eyeLRef.current) (eyeLRef.current as any).scale.set(1,1,1)
+    if (eyeRRef.current) (eyeRRef.current as any).scale.set(1,1,1)
+
+    // start RAF
+    lastMsRef.current = performance.now()
+    let raf = 0
+    const tick = () => {
+      const now = performance.now()
+      const dt = Math.min(0.05, (now - lastMsRef.current) / 1000) // clamp big steps
+      lastMsRef.current = now
+      tRef.current += dt
+
+      animateHead(dt)
+      animateMouth(dt)
+      animateEyes(dt)
+      animateBlink(dt)
+
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [scene])
+
+  // update mouth command when viseme changes (tick will smooth it)
+  useEffect(() => {
+    const raw = VISEME_OPEN[viseme] ?? 0
+    let cmd = Math.pow(raw, EASE_POW) * OPEN_GAIN
+    mouthCmdRef.current = clamp01(cmd)
+  }, [viseme])
+
+  // --- animation implementations ---
+
+  function animateHead(dt: number) {
+    if (!scene) return
+    const t = tRef.current
+
+    // gentle idle sinusoids
+    const yaw   = HEAD_YAW   * Math.sin(t * 0.6)
+    const pitch = HEAD_PITCH * Math.sin(t * 0.8 + 1.3)
+    const roll  = HEAD_ROLL  * Math.sin(t * 0.5 + 0.7)
+    scene.rotation.set(pitch, yaw, roll)
+
+    // bob up/down; add slight emphasis with mouth openness (talking)
+    const openness = mouthCurOpenRef.current
+    scene.position.y = -0.2 + HEAD_BOB_Y * (Math.sin(t * 2.2) * 0.6 + openness * 0.4)
+  }
+
+  function animateMouth(dt: number) {
+    const targets = mouthTargetsRef.current
+    if (!targets.length) return
+
+    // --- Stage 1: attack/release smoothing for TARGET (slew limiter) ---
+    const cmd = mouthCmdRef.current
+    const tgtPrev = mouthTgtOpenRef.current
+    const tc = cmd > tgtPrev ? ATTACK_TC : RELEASE_TC
+    const alpha = 1 - Math.exp(-dt / Math.max(1e-3, tc))   // TC → per-frame alpha
+    const tgtNext = tgtPrev + (cmd - tgtPrev) * alpha
+    mouthTgtOpenRef.current = clamp01(tgtNext)
+
+    // --- Stage 2: smooth CURRENT toward TARGET (existing behavior) ---
+    const curPrev = mouthCurOpenRef.current
+    const curNext = lerp(curPrev, mouthTgtOpenRef.current, LERP_MOUTH)
+    mouthCurOpenRef.current = curNext
+
+    const smileTarget =
+      mouthTgtOpenRef.current > 0.8 ? 0.25 :
+      mouthTgtOpenRef.current > 0.5 ? 0.14 :
+      0.02
+
+    for (const { mesh, openIdx, smileIdx } of targets) {
+      const infl = mesh.morphTargetInfluences as number[]
+      infl[openIdx] = curNext
+      if (smileIdx != null) infl[smileIdx] = lerp(infl[smileIdx] ?? 0, smileTarget, LERP_SMILE)
+      mesh.needsUpdate = true
+    }
+  }
+
+  function animateEyes(dt: number) {
+    const eyeL = eyeLRef.current as any
+    const eyeR = eyeRRef.current as any
+    if (!eyeL && !eyeR) return
+
+    // saccades (choose a new gaze target every 0.8–2.2s)
+    saccadeTimerRef.current += dt
+    if (saccadeTimerRef.current >= nextSaccadeInRef.current) {
+      saccadeTimerRef.current = 0
+      nextSaccadeInRef.current = rand(SACCADE_EVERY_MIN, SACCADE_EVERY_MAX)
+      saccadeDurRef.current = SACCADE_TIME
+
+      // new target (bounded)
+      eyeGazeStartRef.current = { ...eyeGazeRef.current }
+      eyeGazeTargetRef.current = {
+        yaw:   rand(-EYE_YAW_MAX, EYE_YAW_MAX),
+        pitch: rand(-EYE_PITCH_MAX, EYE_PITCH_MAX),
+      }
+    }
+
+    // glide toward target
+    const r = clamp01(saccadeTimerRef.current / saccadeDurRef.current)
+    const s = easeOutCubic(r)
+    eyeGazeRef.current.yaw   = lerp(eyeGazeStartRef.current.yaw,   eyeGazeTargetRef.current.yaw,   s)
+    eyeGazeRef.current.pitch = lerp(eyeGazeStartRef.current.pitch, eyeGazeTargetRef.current.pitch, s)
+
+    // apply rotations (Y = yaw, X = pitch)
+    if (eyeL) { eyeL.rotation.y = eyeGazeRef.current.yaw;   eyeL.rotation.x = eyeGazeRef.current.pitch }
+    if (eyeR) { eyeR.rotation.y = eyeGazeRef.current.yaw;   eyeR.rotation.x = eyeGazeRef.current.pitch }
+  }
+
+  function animateBlink(dt: number) {
+    const eyeL = eyeLRef.current as any
+    const eyeR = eyeRRef.current as any
+    if (!eyeL && !eyeR) return
+
+    if (!blinkingRef.current) {
+      blinkTimerRef.current += dt
+      if (blinkTimerRef.current >= nextBlinkInRef.current) {
+        // start a blink
+        blinkingRef.current = true
+        blinkPhaseRef.current = 0
+        blinkTimerRef.current = 0
+        nextBlinkInRef.current = rand(BLINK_EVERY_MIN, BLINK_EVERY_MAX)
+      }
+    }
+
+    if (blinkingRef.current) {
+      blinkPhaseRef.current += dt / BLINK_DURATION
+      const p = blinkPhaseRef.current
+
+      // symmetric close+open with a fast curve
+      const k = p < 0.5 ? (p / 0.5) : (1 - (p - 0.5) / 0.5) // 0→1→0
+      const closed = easeOutCubic(k)
+      const yScale = THREE.MathUtils.lerp(1, BLINK_CLOSED_Y, closed)
+
+      if (eyeL) eyeL.scale.y = yScale
+      if (eyeR) eyeR.scale.y = yScale
+
+      if (p >= 1) {
+        blinkingRef.current = false
+        if (eyeL) eyeL.scale.y = 1
+        if (eyeR) eyeR.scale.y = 1
+      }
+    }
+  }
+
+  if (!scene) return null
+  return <primitive object={scene} position={[0, -0.2, 0]} />
+}
+
 useGLTF.preload('/character/face.glb')
+
+// --- small helpers ---
+function findBySubstring(root: THREE.Object3D, needle: string): THREE.Object3D | null {
+  let found: THREE.Object3D | null = null
+  root.traverse(obj => {
+    if (found) return
+    if (obj.name && obj.name.toLowerCase().includes(needle.toLowerCase())) {
+      found = obj
+    }
+  })
+  return found
+}
+function rand(a:number,b:number){ return a + Math.random()*(b-a) }
+
